@@ -1,0 +1,157 @@
+#include <Wire.h>
+#include <RTClib.h> 
+#include <LiquidCrystal_I2C.h> 
+#include <DHT.h>
+
+// Định nghĩa các chân kết nối
+#define DHTPIN 11 
+#define DHTTYPE DHT11 
+const int ledRed = 8;   // LED Đỏ (Cảnh báo độ ẩm)
+const int ledYel = 7;   // LED Vàng (Cảnh báo nhiệt độ)
+const int ledGre = 6;   // LED Xanh (An toàn)
+const int pinBut = 12;  // Nút bấm chuyển trang
+
+// --- PHẦN ĐÃ SỬA: Cấu hình màn hình LCD ---
+// Địa chỉ I2C là 0x20 vì 3 chân A0, A1, A2 của PCF8574 nối GND. 
+// (Nếu bạn nối 3 chân này lên 5V, hãy đổi số 0x20 thành 0x27)
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+RTC_DS1307 RTC;
+DHT dht(DHTPIN, DHTTYPE);
+
+// Ngưỡng an toàn cho phòng ở
+float trigger_t_min = 20.0; // Dưới 20 độ là lạnh
+float trigger_t_max = 32.0; // Trên 32 độ là nóng
+float trigger_u_min = 40.0; // Dưới 40% là hanh khô
+float trigger_u_max = 75.0; // Trên 75% là quá ẩm
+unsigned long thoiGianLCD = 0;
+// Biến toàn cục
+int trangHienThi = 1; // 1: Nhiệt độ, 2: Độ ẩm, 3: Thời gian
+float nhietDo = 0;
+float doAm = 0;
+unsigned long thoiGianDocCu = 0;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // --- PHẦN ĐÃ SỬA: Khởi tạo I2C trước tiên ---
+  
+  
+  // Khởi tạo LCD
+  lcd.init(); 
+  lcd.backlight(); 
+  Wire.begin();
+  dht.begin();
+  
+  // Kiểm tra RTC
+  if (!RTC.begin()) {
+    lcd.setCursor(0, 0);
+    lcd.print("Loi RTC!        ");
+    delay(2000);
+    // Tạm thời comment while(1) để code không bị treo cứng nếu RTC lỗi mô phỏng
+    while (1);
+  }
+  if (!RTC.isrunning()) {
+    RTC.adjust(DateTime(F(__DATE__), F(__TIME__))); // Cập nhật giờ tự động lúc nạp code
+  }
+
+  // Khởi tạo các chân I/O
+  pinMode(ledRed, OUTPUT);
+  pinMode(ledYel, OUTPUT);
+  pinMode(ledGre, OUTPUT);
+  pinMode(pinBut, INPUT);
+
+  lcd.setCursor(0, 0);
+  lcd.print("   KHOI DONG   ");
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  // 1. Kiểm tra nút bấm để chuyển trang
+  if (digitalRead(pinBut) == HIGH) {
+    trangHienThi++;
+    if (trangHienThi > 3) trangHienThi = 1;
+    lcd.clear(); 
+    hienThiLCD(); // Hiển thị ngay lập tức khi vừa sang trang mới
+    delay(300);   // Chờ nhả nút (tăng lên 300ms để chống dội tốt hơn)
+  }
+
+  // 2. Cập nhật dữ liệu cảm biến DHT22 mỗi 2 giây
+  if (millis() - thoiGianDocCu > 2000) {
+    nhietDo = dht.readTemperature();
+    doAm = dht.readHumidity();
+    thoiGianDocCu = millis();
+    
+    // Điều khiển đèn LED cảnh báo
+    dieuKhienLED();
+  }
+
+  // 3. Cập nhật màn hình LCD mỗi 1 giây (Tránh quá tải I2C và giúp đồng hồ chạy mượt)
+  if (millis() - thoiGianLCD > 1000) {
+    thoiGianLCD = millis();
+    hienThiLCD();
+  }
+}
+
+// Hàm kiểm tra và bật tắt các đèn LED (Giữ nguyên logic của bạn)
+void dieuKhienLED() {
+  if (isnan(nhietDo) || isnan(doAm)) return; 
+
+  bool canhBaoNhiet = (nhietDo < trigger_t_min || nhietDo > trigger_t_max);
+  bool canhBaoAm = (doAm < trigger_u_min || doAm > trigger_u_max);
+digitalWrite(ledYel, canhBaoNhiet ? HIGH : LOW);
+  digitalWrite(ledRed, canhBaoAm ? HIGH : LOW);
+  digitalWrite(ledGre, (!canhBaoNhiet && !canhBaoAm) ? HIGH : LOW);
+}
+
+// Hàm hiển thị màn hình (Giữ nguyên logic của bạn)
+void hienThiLCD() {
+  DateTime now = RTC.now();
+
+  if (trangHienThi == 1) {
+    // --- TRANG 1: NHIỆT ĐỘ ---
+    lcd.setCursor(0, 0);
+    lcd.print("TEMPERATURE:       ");
+    lcd.setCursor(0, 1);
+    //if (isnan(nhietDo)) {
+      //lcd.print("Loi cam bien!   ");
+    //} else {
+      lcd.print(nhietDo, 1);
+      lcd.print((char)223); // Ký tự độ C
+      lcd.print("C ");
+      if (nhietDo > trigger_t_max) lcd.print(" (HOT) ");
+      else if (nhietDo < trigger_t_min) lcd.print(" (COLD) ");
+      else lcd.print(" (GOOD)  ");
+    
+
+  } else if (trangHienThi == 2) {
+    // --- TRANG 2: ĐỘ ẨM ---
+    lcd.setCursor(0, 0);
+    lcd.print("HUMIDITY:    ");
+    lcd.setCursor(0, 1);
+    //if (isnan(doAm)) {
+    //  lcd.print("Loi cam bien!   ");
+    //} else {
+      lcd.print(doAm, 1);
+      lcd.print("%  ");
+      if (doAm > trigger_u_max) lcd.print(" (DRY)");
+      else if (doAm < trigger_u_min) lcd.print(" (HUMID)   ");
+      else lcd.print(" (GOOD)   ");
+    
+
+  } else if (trangHienThi == 3) {
+    // --- TRANG 3: THỜI GIAN THỰC ---
+    lcd.setCursor(0, 0);
+    lcd.print("DATE: ");
+    if(now.day() < 10) lcd.print("0"); lcd.print(now.day()); lcd.print("/");
+    if(now.month() < 10) lcd.print("0"); lcd.print(now.month()); lcd.print("/");
+    lcd.print(now.year());
+
+    lcd.setCursor(0, 1);
+    lcd.print("TIME:  ");
+    if(now.hour() < 10) lcd.print("0"); lcd.print(now.hour()); lcd.print(":");
+    if(now.minute() < 10) lcd.print("0"); lcd.print(now.minute()); lcd.print(":");
+    if(now.second() < 10) lcd.print("0"); lcd.print(now.second());
+  }
+}
